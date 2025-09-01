@@ -1,0 +1,26 @@
+{
+  "title": "",
+  "content": "",
+  "langage": "",
+  "translate": {
+    "en-US": { "title": "", "content": "" },
+    "zh-CN": { "title": "", "content": "" },
+    "zh-TW": { "title": "", "content": "" },
+    "es-ES": { "title": "", "content": "" },
+    "fr-FR": { "title": "", "content": "" },
+    "ru-RU": { "title": "", "content": "" },
+    "ja-JP": { "title": "", "content": "" },
+    "de-DE": { "title": "", "content": "" },
+    "pt-BR": { "title": "", "content": "" },
+    "ko-KR": { "title": "", "content": "" }
+  },
+  "unsafetyTags": [
+    "暴力",
+    "色情",
+    "种族主义",
+    "误导性内容",
+    "侵犯隐私",
+    "自残",
+    "毒品相关"
+  ]
+}
