@@ -12,7 +12,7 @@ localConnectionString = "mysql://username:password@localhost:3306/xeoos"
 AI_URL = "https://gateway.ai.cloudflare.com/v1/442fe5198bff93bdf60d4223d9618033/xeoos-translate/compat/chat/completions"
 AI_GATEWAY_TOKEN = "GhbH8IBAO5801aqXd0HCHWZnbsmFhNXGfAG3AxAD"
 AI_TOKEN = "sk-7231a4cd8e094d858241db69f159d018"
-FORUM_URL = "https://xeoos.com"
+FORUM_URL = "https://xeoos.net"
 
 [observability.logs]
 enabled = true
