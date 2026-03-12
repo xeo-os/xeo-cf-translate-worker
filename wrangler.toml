@@ -17,5 +17,8 @@ FORUM_URL = "https://xeoos.net"
 [observability.logs]
 enabled = true
 
+[triggers]
+crons = ["* * * * *"]
+
 
 

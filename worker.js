@@ -2,6 +2,9 @@
 import { Pool } from "@prisma/pg-worker";
 
 export default {
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(processPendingTasks(env, 2));
+  },
   async fetch(request, env, ctx) {
     // 只处理 POST 请求
     if (request.method !== "POST") {
@@ -21,15 +24,10 @@ export default {
         });
       }
 
-      // 立即返回响应
-      const response = new Response(JSON.stringify({ ok: "true" }), {
+      await processTranslationTask(taskUuid, env, { timeoutMs: 0 });
+      return new Response(JSON.stringify({ ok: "true" }), {
         headers: { "Content-Type": "application/json" },
       });
-
-      // 使用 waitUntil 异步处理翻译任务
-      ctx.waitUntil(processTranslationTask(taskUuid, env));
-
-      return response;
     } catch (error) {
       return new Response(JSON.stringify({ error: "Invalid request" }), {
         status: 400,
@@ -39,7 +37,37 @@ export default {
   },
 };
 
-async function processTranslationTask(taskUuid, env) {
+async function processPendingTasks(env, limit = 2) {
+  const pool = new Pool({ connectionString: env.HYPERDRIVE.connectionString });
+  try {
+    const pending = await pool.query(
+      'SELECT id FROM "Task" WHERE status = $1 ORDER BY "createdAt" ASC LIMIT $2',
+      ["PENDING", limit]
+    );
+    if (!pending.rows.length) {
+      console.log(`[${new Date().toISOString()}] 无待处理翻译任务`);
+      return;
+    }
+
+    console.log(
+      `[${new Date().toISOString()}] 定时任务开始处理 ${pending.rows.length} 个待翻译任务`
+    );
+    for (const row of pending.rows) {
+      try {
+        await processTranslationTask(row.id, env, { timeoutMs: 0 });
+      } catch (error) {
+        console.error(
+          `[${new Date().toISOString()}] 定时任务处理失败: ${row.id}`,
+          error
+        );
+      }
+    }
+  } finally {
+    await pool.end();
+  }
+}
+
+async function processTranslationTask(taskUuid, env, options = {}) {
   const startTime = Date.now();
   // console.log(`[${new Date().toISOString()}] 开始处理翻译任务: ${taskUuid}`);
   // fetch(`${env.FORUM_URL}/api/task/report`, {
@@ -53,17 +81,34 @@ async function processTranslationTask(taskUuid, env) {
 
   // 使用 Hyperdrive 连接
   const pool = new Pool({ connectionString: env.HYPERDRIVE.connectionString });
+  const timeoutMs = Number(options.timeoutMs ?? 28000);
+  const abortController = timeoutMs > 0 ? new AbortController() : null;
+  const timeoutId =
+    abortController &&
+    setTimeout(() => {
+      abortController.abort(`Task timeout: exceeded ${timeoutMs}ms`);
+    }, timeoutMs);
+  const throwIfAborted = () => {
+    if (abortController?.signal?.aborted) {
+      const reason = abortController.signal.reason;
+      throw new Error(
+        typeof reason === "string" ? reason : "Task aborted by timeout"
+      );
+    }
+  };
 
   // 创建实际任务Promise
   const taskPromise = async () => {
     try {
       console.log(`[${new Date().toISOString()}] 正在连接数据库...`);
+      throwIfAborted();
 
       // 从数据库获取任务
       const taskResult = await pool.query(
         'SELECT * FROM "Task" WHERE id = $1',
         [taskUuid]
       );
+      throwIfAborted();
 
       if (taskResult.rows.length === 0) {
         throw new Error("Task not found");
@@ -86,6 +131,7 @@ async function processTranslationTask(taskUuid, env) {
           'SELECT * FROM "Post" WHERE id = $1',
           [task.postId]
         );
+        throwIfAborted();
         if (postResult.rows.length > 0) {
           postData = postResult.rows[0];
           console.log(
@@ -103,6 +149,7 @@ async function processTranslationTask(taskUuid, env) {
           'SELECT * FROM "Reply" WHERE id = $1',
           [task.replyId]
         );
+        throwIfAborted();
         if (replyResult.rows.length > 0) {
           replyData = replyResult.rows[0];
           console.log(
@@ -127,13 +174,11 @@ async function processTranslationTask(taskUuid, env) {
           content: postData.origin,
         };
 
-        aiPrompt = `请你充当一个论坛帖子回复翻译官，我会给出两个JSON，你的任务是将阅读第一个JSON，将其翻译成不同语言后，补全到最后的的JSON中。你只需要输出JSON，不要发送其他消息。下面是第一个JSON：
-\`\`\`
+        aiPrompt = `你是论坛翻译器。仅输出一个合法 JSON 对象，不要 Markdown。
+输入:
 ${JSON.stringify(inputJson)}
-\`\`\`
-注意，你需要判断帖子内容的语言，translate中如果某语言与帖子内容语言相同，那么该语言对应的title和content字段需留空。
-你还需要判断帖子内容是否包含敏感信息，如果包含，请在unsafeTags中添加对应的标签，否则留空。下面是第二个JSON：
-\`\`\`json
+
+输出 schema:
 {
   "title": "",
   "content": "",
@@ -162,21 +207,21 @@ ${JSON.stringify(inputJson)}
     "无意义内容"
   ]
 }
-注意输出JSON的格式。你需要对某些特殊字符（如引号、反斜杠等）进行转义处理，以确保JSON格式正确。
-\`\`\``;
+规则:
+1) 自动识别原文语言，写入 langage。
+2) 与原文同语言的 translate 字段留空字符串。
+3) unsafeTags 只能从给定列表中选择；无风险则 []。`;
       } else if (replyData) {
         console.log(`[${new Date().toISOString()}] 准备处理回复翻译`);
         inputJson = {
           content: replyData.content,
         };
 
-        aiPrompt = `请你充当一个论坛帖子回复翻译官，我会给出两个JSON，你的任务是将阅读第一个JSON，将其翻译成不同语言后，补全到最后的的JSON中。你只需要输出JSON，不要发送其他消息。下面是第一个JSON：
-\`\`\`
+        aiPrompt = `你是论坛翻译器。仅输出一个合法 JSON 对象，不要 Markdown。
+输入:
 ${JSON.stringify(inputJson)}
-\`\`\`
-注意，你需要判断帖子回复内容的语言，translate中如果某语言与帖子回复内容语言相同，那么该语言对应的字符串需留空。
-你还需要判断帖子回复内容是否包含敏感信息，如果包含，请在unsafeTags中添加对应的标签，否则留空。下面是第二个JSON：
-\`\`\`json
+
+输出 schema:
 {
   "content": "",
   "langage": "",
@@ -204,8 +249,10 @@ ${JSON.stringify(inputJson)}
     "无意义内容"
   ]
 }
-注意输出JSON的格式。你需要对某些特殊字符（如引号、反斜杠等）进行转义处理，以确保JSON格式正确。
-\`\`\``;
+规则:
+1) 自动识别原文语言，写入 langage。
+2) 与原文同语言的 translate 字段留空字符串。
+3) unsafeTags 只能从给定列表中选择；无风险则 []。`;
       } else {
         throw new Error("No post or reply found in task");
       }
@@ -221,6 +268,7 @@ ${JSON.stringify(inputJson)}
 
       const aiResponse = await fetch(env.AI_URL, {
         method: "POST",
+        ...(abortController ? { signal: abortController.signal } : {}),
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${env.AI_TOKEN}`,
@@ -234,6 +282,8 @@ ${JSON.stringify(inputJson)}
               content: aiPrompt,
             },
           ],
+          temperature: 0.2,
+          max_tokens: 1400,
           response_format: { type: "json_object" },
         }),
       });
@@ -243,6 +293,7 @@ ${JSON.stringify(inputJson)}
       }
 
       const aiData = await aiResponse.json();
+      throwIfAborted();
       let aiContent = aiData?.choices?.[0]?.message?.content || "";
       if (Array.isArray(aiContent)) {
         aiContent = aiContent.map((item) => item?.text || "").join("");
@@ -292,8 +343,10 @@ ${JSON.stringify(inputJson)}
           console.error(`[${new Date().toISOString()}] 转义后 JSON 解析仍然失败:`, escapeError.message);
           throw new Error("Failed to parse AI response JSON");
         }
-      }// 更新数据库
+      }
+      // 更新数据库
       console.log(`[${new Date().toISOString()}] 正在更新数据库...`);
+      throwIfAborted();
       if (isPost) {
         const updatedFields = await updatePost(pool, task.postId, translationResult);
         console.log(`[${new Date().toISOString()}] 帖子数据更新完成，更新了 ${updatedFields} 个字段`);
@@ -304,6 +357,7 @@ ${JSON.stringify(inputJson)}
 
       // 更新任务状态为完成
       console.log(`[${new Date().toISOString()}] 正在更新任务状态为完成...`);
+      throwIfAborted();
       await pool.query('UPDATE "Task" SET status = $1 WHERE id = $2', [
         "DONE",
         taskUuid,
@@ -335,10 +389,21 @@ ${JSON.stringify(inputJson)}
   } catch (error) {
     const endTime = Date.now();
     const duration = endTime - startTime;
-    console.error(
-      `[${new Date().toISOString()}] 翻译任务失败，耗时: ${duration}ms`,
-      error
-    );
+    const errorMessage =
+      error && typeof error.message === "string"
+        ? error.message
+        : String(error);
+    if (errorMessage.includes("timeout")) {
+      console.error(
+        `[${new Date().toISOString()}] 翻译任务超时，耗时: ${duration}ms`,
+        error
+      );
+    } else {
+      console.error(
+        `[${new Date().toISOString()}] 翻译任务失败，耗时: ${duration}ms`,
+        error
+      );
+    }
 
     // 更新任务状态为失败
     try {
@@ -362,6 +427,7 @@ ${JSON.stringify(inputJson)}
       );
     }
   } finally {
+    if (timeoutId) clearTimeout(timeoutId);
     console.log(`[${new Date().toISOString()}] 正在关闭数据库连接...`);
     await pool.end();
   }
