@@ -54,13 +54,6 @@ async function processTranslationTask(taskUuid, env) {
   // 使用 Hyperdrive 连接
   const pool = new Pool({ connectionString: env.HYPERDRIVE.connectionString });
 
-  // 创建超时Promise
-  const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => {
-      reject(new Error("Task timeout: exceeded 25 seconds"));
-    }, 25000);
-  });
-
   // 创建实际任务Promise
   const taskPromise = async () => {
     try {
@@ -338,22 +331,14 @@ ${JSON.stringify(inputJson)}
   };
 
   try {
-    // 使用 Promise.race 实现超时保护
-    await Promise.race([taskPromise(), timeoutPromise]);
+    await taskPromise();
   } catch (error) {
     const endTime = Date.now();
     const duration = endTime - startTime;
-
-    if (error.message.includes("Task timeout")) {
-      console.error(
-        `[${new Date().toISOString()}] 翻译任务超时，耗时: ${duration}ms (超过25秒限制)`
-      );
-    } else {
-      console.error(
-        `[${new Date().toISOString()}] 翻译任务失败，耗时: ${duration}ms`,
-        error
-      );
-    }
+    console.error(
+      `[${new Date().toISOString()}] 翻译任务失败，耗时: ${duration}ms`,
+      error
+    );
 
     // 更新任务状态为失败
     try {
