@@ -217,23 +217,31 @@ ${JSON.stringify(inputJson)}
         throw new Error("No post or reply found in task");
       }
 
-      // 调用 Gemini AI API
-      console.log(`[${new Date().toISOString()}] 正在调用 Gemini AI API...`);
-      const aiResponse = await fetch(`${env.AI_URL}?key=${env.AI_TOKEN}`, {
+      // 调用 DeepSeek（通过 AI Gateway）
+      console.log(`[${new Date().toISOString()}] 正在调用 DeepSeek API...`);
+      if (!env.AI_TOKEN) {
+        throw new Error("Missing AI_TOKEN");
+      }
+      if (!env.AI_GATEWAY_TOKEN) {
+        throw new Error("Missing AI_GATEWAY_TOKEN");
+      }
+
+      const aiResponse = await fetch(env.AI_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${env.AI_TOKEN}`,
+          "cf-aig-authorization": `Bearer ${env.AI_GATEWAY_TOKEN}`,
         },
         body: JSON.stringify({
-          contents: [
+          model: "deepseek/deepseek-chat",
+          messages: [
             {
-              parts: [
-                {
-                  text: aiPrompt,
-                },
-              ],
+              role: "user",
+              content: aiPrompt,
             },
           ],
+          response_format: { type: "json_object" },
         }),
       });
 
@@ -242,7 +250,13 @@ ${JSON.stringify(inputJson)}
       }
 
       const aiData = await aiResponse.json();
-      const aiContent = aiData.candidates[0].content.parts[0].text;
+      let aiContent = aiData?.choices?.[0]?.message?.content || "";
+      if (Array.isArray(aiContent)) {
+        aiContent = aiContent.map((item) => item?.text || "").join("");
+      }
+      if (!aiContent) {
+        throw new Error("Empty AI response content");
+      }
       console.log(
         `[${new Date().toISOString()}] AI API 调用成功，响应长度: ${
           aiContent.length
