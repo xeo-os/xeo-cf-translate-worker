@@ -3,7 +3,8 @@ import { Pool } from "@prisma/pg-worker";
 
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(processPendingTasks(env, 2));
+    const cronBatchSize = Number(env.CRON_BATCH_SIZE || 1);
+    ctx.waitUntil(processPendingTasks(env, cronBatchSize));
   },
   async fetch(request, env, ctx) {
     // 只处理 POST 请求
@@ -24,10 +25,16 @@ export default {
         });
       }
 
-      await processTranslationTask(taskUuid, env, { timeoutMs: 0 });
-      return new Response(JSON.stringify({ ok: "true" }), {
+      const response = new Response(JSON.stringify({ ok: "true" }), {
         headers: { "Content-Type": "application/json" },
       });
+      ctx.waitUntil(
+        processTranslationTask(taskUuid, env, {
+          timeoutMs: 0,
+          source: "fetch",
+        })
+      );
+      return response;
     } catch (error) {
       return new Response(JSON.stringify({ error: "Invalid request" }), {
         status: 400,
@@ -37,11 +44,11 @@ export default {
   },
 };
 
-async function processPendingTasks(env, limit = 2) {
+async function processPendingTasks(env, limit = 1) {
   const pool = new Pool({ connectionString: env.HYPERDRIVE.connectionString });
   try {
     const pending = await pool.query(
-      'SELECT id FROM "Task" WHERE status = $1 ORDER BY "createdAt" ASC LIMIT $2',
+      'SELECT id FROM "Task" WHERE status = $1 ORDER BY "createdAt" DESC LIMIT $2',
       ["PENDING", limit]
     );
     if (!pending.rows.length) {
@@ -54,7 +61,10 @@ async function processPendingTasks(env, limit = 2) {
     );
     for (const row of pending.rows) {
       try {
-        await processTranslationTask(row.id, env, { timeoutMs: 0 });
+        await processTranslationTask(row.id, env, {
+          timeoutMs: 0,
+          source: "cron",
+        });
       } catch (error) {
         console.error(
           `[${new Date().toISOString()}] 定时任务处理失败: ${row.id}`,
@@ -69,6 +79,11 @@ async function processPendingTasks(env, limit = 2) {
 
 async function processTranslationTask(taskUuid, env, options = {}) {
   const startTime = Date.now();
+  const source = options.source || "unknown";
+  const timeoutMs = Number(options.timeoutMs ?? 0);
+  console.log(
+    `[${new Date().toISOString()}] 开始处理翻译任务: ${taskUuid} source=${source} timeoutMs=${timeoutMs}`
+  );
   // console.log(`[${new Date().toISOString()}] 开始处理翻译任务: ${taskUuid}`);
   // fetch(`${env.FORUM_URL}/api/task/report`, {
   //   method: "POST",
@@ -81,7 +96,6 @@ async function processTranslationTask(taskUuid, env, options = {}) {
 
   // 使用 Hyperdrive 连接
   const pool = new Pool({ connectionString: env.HYPERDRIVE.connectionString });
-  const timeoutMs = Number(options.timeoutMs ?? 28000);
   const abortController = timeoutMs > 0 ? new AbortController() : null;
   const timeoutId =
     abortController &&
@@ -208,7 +222,7 @@ ${JSON.stringify(inputJson)}
   ]
 }
 规则:
-1) 自动识别原文语言，写入 langage。
+1) 自动识别原文语言，写入 langage，且 langage 只能是 en-US/zh-CN/zh-TW/es-ES/fr-FR/ru-RU/ja-JP/de-DE/pt-BR/ko-KR 之一。
 2) 与原文同语言的 translate 字段留空字符串。
 3) unsafeTags 只能从给定列表中选择；无风险则 []。`;
       } else if (replyData) {
@@ -250,7 +264,7 @@ ${JSON.stringify(inputJson)}
   ]
 }
 规则:
-1) 自动识别原文语言，写入 langage。
+1) 自动识别原文语言，写入 langage，且 langage 只能是 en-US/zh-CN/zh-TW/es-ES/fr-FR/ru-RU/ja-JP/de-DE/pt-BR/ko-KR 之一。
 2) 与原文同语言的 translate 字段留空字符串。
 3) unsafeTags 只能从给定列表中选择；无风险则 []。`;
       } else {
@@ -283,7 +297,7 @@ ${JSON.stringify(inputJson)}
             },
           ],
           temperature: 0.2,
-          max_tokens: 1400,
+          max_tokens: 3200,
           response_format: { type: "json_object" },
         }),
       });
@@ -312,10 +326,7 @@ ${JSON.stringify(inputJson)}
       let jsonString;
       try {
         console.log(`[${new Date().toISOString()}] 正在解析 AI 返回的 JSON...`);
-        // 提取 JSON 部分（去除可能的 markdown 标记）
-        const jsonMatch = aiContent.match(/```json\s*([\s\S]*?)\s*```/) ||
-          aiContent.match(/```\s*([\s\S]*?)\s*```/) || [null, aiContent];
-        jsonString = jsonMatch[1] || aiContent;
+        jsonString = extractJsonCandidate(aiContent);
         translationResult = JSON.parse(jsonString.trim());
         console.log(
           `[${new Date().toISOString()}] JSON 解析成功，检测到语言: ${
@@ -329,18 +340,16 @@ ${JSON.stringify(inputJson)}
         );
         console.error(`[${new Date().toISOString()}] AI 原始响应:`, aiContent);
         console.error(`[${new Date().toISOString()}] 提取的 JSON 字符串:`, jsonString);
-        // 尝试手动转义后再次解析
+        // 清理不可见控制字符后再次解析
         try {
-          console.log(`[${new Date().toISOString()}] 尝试对 JSON 字符串进行转义后再次解析...`);
-          // 简单的转义处理：替换未转义的反斜杠和引号
-          let escaped = jsonString
-            .replace(/\\(?!["\\/bfnrtu])/g, "\\\\") // 单独的反斜杠转义
-            .replace(/\u2028|\u2029/g, " ") // 去除特殊 unicode 分隔符
-            .replace(/\r?\n/g, "\\n"); // 换行转义
-          translationResult = JSON.parse(escaped.trim());
+          console.log(`[${new Date().toISOString()}] 尝试清理控制字符后再次解析 JSON...`);
+          const cleaned = jsonString
+            .replace(/^\uFEFF/, "")
+            .replace(/[\u0000-\u0019]/g, " ");
+          translationResult = JSON.parse(cleaned.trim());
           console.log(`[${new Date().toISOString()}] 转义后 JSON 解析成功，检测到语言: ${translationResult.langage}`);
         } catch (escapeError) {
-          console.error(`[${new Date().toISOString()}] 转义后 JSON 解析仍然失败:`, escapeError.message);
+          console.error(`[${new Date().toISOString()}] 清理后 JSON 解析仍然失败:`, escapeError.message);
           throw new Error("Failed to parse AI response JSON");
         }
       }
@@ -431,6 +440,20 @@ ${JSON.stringify(inputJson)}
     console.log(`[${new Date().toISOString()}] 正在关闭数据库连接...`);
     await pool.end();
   }
+}
+
+function extractJsonCandidate(rawText) {
+  const text = String(rawText || "").trim().replace(/^\uFEFF/, "");
+  const fencedJson = text.match(/```json\s*([\s\S]*?)\s*```/i);
+  if (fencedJson?.[1]) return fencedJson[1].trim();
+  const fenced = text.match(/```\s*([\s\S]*?)\s*```/);
+  if (fenced?.[1]) return fenced[1].trim();
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return text.slice(firstBrace, lastBrace + 1).trim();
+  }
+  return text;
 }
 
 async function updatePost(pool, postId, translationResult) {
