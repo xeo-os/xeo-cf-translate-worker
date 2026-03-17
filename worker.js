@@ -289,7 +289,7 @@ ${JSON.stringify(inputJson)}
           "cf-aig-authorization": `Bearer ${env.AI_GATEWAY_TOKEN}`,
         },
         body: JSON.stringify({
-          model: "custom-zai/glm-4-flash",
+          model: "custom-zai/glm-4.7-flash",
           messages: [
             {
               role: "user",
