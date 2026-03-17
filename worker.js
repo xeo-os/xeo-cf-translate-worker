@@ -271,8 +271,8 @@ ${JSON.stringify(inputJson)}
         throw new Error("No post or reply found in task");
       }
 
-      // 调用 DeepSeek（通过 AI Gateway）
-      console.log(`[${new Date().toISOString()}] 正在调用 DeepSeek API...`);
+      // 调用 （通过 AI Gateway）
+      console.log(`[${new Date().toISOString()}] 正在调用 API...`);
       if (!env.AI_TOKEN) {
         throw new Error("Missing AI_TOKEN");
       }
@@ -289,7 +289,7 @@ ${JSON.stringify(inputJson)}
           "cf-aig-authorization": `Bearer ${env.AI_GATEWAY_TOKEN}`,
         },
         body: JSON.stringify({
-          model: "deepseek/deepseek-chat",
+          model: "custom-zai/glm-4-flash",
           messages: [
             {
               role: "user",
