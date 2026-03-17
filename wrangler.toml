@@ -18,7 +18,7 @@ FORUM_URL = "https://xeoos.net"
 enabled = true
 
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/30 * * * *"]
 
 
 
