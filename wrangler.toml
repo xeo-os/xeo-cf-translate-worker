@@ -9,9 +9,7 @@ id = "68facaf0ddf948009c6b6c67c109a48a"
 localConnectionString = "mysql://username:password@localhost:3306/xeoos"
 
 [vars]
-AI_URL = "https://gateway.ai.cloudflare.com/v1/442fe5198bff93bdf60d4223d9618033/xeoos-translate/custom-zai/api/paas/v4/chat/completions"
-AI_GATEWAY_TOKEN = "GhbH8IBAO5801aqXd0HCHWZnbsmFhNXGfAG3AxAD"
-AI_TOKEN = "5ab7c965bc554999934b5e980e1c48b8.vYiu5TjU6NA5V9Uh"
+AI_URL = "https://gateway.ai.cloudflare.com/v1/442fe5198bff93bdf60d4223d9618033/xeoos-translate/custom-dooo/chat/completions"
 FORUM_URL = "https://xeoos.net"
 
 [observability.logs]
